@@ -36,34 +36,63 @@ PUERTO = 8790
 
 def moodle_skill_dir() -> Path:
     """
-    Raíz de la skill del campus. Función (no constante): el tutor puede tener más
-    de un campus dado de alta (multi-tenant) y cambiar cuál está activo mientras
-    este proceso sigue corriendo, así que no se puede fijar una sola vez al importar.
+    Raíz (flat, legacy) de la skill del campus: ``~/.moodle-skill``. Sigue existiendo
+    como función (no constante) porque varias cosas cuelgan de ella, pero para leer
+    datos del tutor lo que hay que usar es `_tenant_dir()` / `salidas_campus()` /
+    `mis_datos_path()`, que resuelven bajo el tenant activo.
     """
     return HOME / ".moodle-skill"
 
 
+def _tenant_dir() -> Path:
+    """
+    Carpeta del tenant activo ahora mismo: `~/.moodle-skill/<tenant_activo()>/`.
+    Función (no constante): el tutor puede tener más de un campus dado de alta
+    (multi-tenant) y cambiar cuál está activo mientras este proceso sigue corriendo,
+    así que no se puede fijar una sola vez al importar.
+    """
+    return moodle_skill_dir() / tenant_activo()
+
+
 def salidas_campus() -> Path:
+    """
+    `salidas/` del tenant activo si ya existe (ahí escribe el MCP una vez migrado);
+    si no, cae a la carpeta flat legacy `~/.moodle-skill/salidas` para no romper una
+    instalación que todavía no tocó el layout por tenant.
+    """
+    por_tenant = _tenant_dir() / "salidas"
+    if por_tenant.is_dir():
+        return por_tenant
     return moodle_skill_dir() / "salidas"
 
 
 def mis_datos_path() -> Path:
+    """Igual que `salidas_campus()`: por tenant si existe, si no la flat legacy."""
+    por_tenant = _tenant_dir() / "mis_datos.json"
+    if por_tenant.is_file():
+        return por_tenant
     return moodle_skill_dir() / "mis_datos.json"
 
 
 def tenant_activo() -> str:
     """
     Qué campus está activo ahora mismo, según `~/.moodle-skill/estado.json`
-    (`tenant_activo`). Sin ese archivo, o si no se puede leer, es una instalación
-    de un solo campus: `"tup"`, el mismo default que usa la skill del campus.
+    (`tenant_activo`). Sin ese archivo, si no se puede leer/decodificar, o si su
+    forma no es la esperada (no es un objeto, o `tenant_activo` no es un string),
+    es una instalación de un solo campus: `"tup"`, el mismo default que usa la
+    skill del campus.
     """
     archivo = moodle_skill_dir() / "estado.json"
     if archivo.is_file():
         try:
             estado = json.loads(archivo.read_text(encoding="utf-8"))
-            return estado.get("tenant_activo") or "tup"
-        except (OSError, json.JSONDecodeError):
-            pass
+        except (OSError, ValueError):
+            # ValueError cubre json.JSONDecodeError y UnicodeDecodeError (bytes no-UTF-8).
+            estado = None
+        if isinstance(estado, dict):
+            tenant = estado.get("tenant_activo")
+            if isinstance(tenant, str) and tenant.strip():
+                return tenant
     return "tup"
 
 
@@ -73,10 +102,10 @@ def listar_campus() -> list[dict]:
     if archivo.is_file():
         try:
             datos = json.loads(archivo.read_text(encoding="utf-8"))
-            if isinstance(datos, list):
-                return datos
-        except (OSError, json.JSONDecodeError):
-            pass
+        except (OSError, ValueError):
+            datos = None
+        if isinstance(datos, list):
+            return [d for d in datos if isinstance(d, dict) and d.get("id")]
     return []
 
 
