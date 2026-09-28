@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import unicodedata
 import urllib.request
 import webbrowser
 from datetime import datetime
@@ -43,9 +44,23 @@ log = logging.getLogger("asistente")
 
 def _mis_datos() -> dict:
     try:
-        return json.loads(config.mis_datos_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
+        datos = json.loads(config.mis_datos_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        datos = {}
+    if not isinstance(datos, dict):
+        datos = {}
+    if not datos.get("cursos"):
+        # Campus recién agregado: todavía sin mis_datos, se ofrece lo descubierto.
+        datos = {**datos, **config.catalogo_descubierto()}
+    else:
+        # Materias donde no figurás en ninguna comisión: se ofrecen todas las del curso
+        # (lo descubierto al dar de alta el campus) para poder elegir igual.
+        todas = {c["course_id"]: c for c in config.catalogo_descubierto()["cursos"]}
+        datos = {**datos, "cursos": [
+            {**c, "comisiones_del_tutor": c.get("comisiones_del_tutor") or todas.get(c.get("course_id"), {}).get("comisiones_del_tutor", [])}
+            for c in datos["cursos"] if isinstance(c, dict)
+        ]}
+    return datos
 
 
 def _programas_faltantes(requiere: dict | None) -> list[str]:
@@ -63,6 +78,7 @@ async def estado():
     instaladas = config.skills_instaladas(cfg["carpeta_trabajo"])
     datos = _mis_datos()
     campus = config.mcp_campus()
+    activo = config.campus_activo()
     chequeos = [
         {
             "id": "claude",
@@ -74,7 +90,8 @@ async def estado():
             "id": "campus",
             "ok": bool(campus),
             "titulo": "Conexión con el campus configurada",
-            "detalle": (campus or {}).get("env", {}).get("MOODLE_URL", ""),
+            "detalle": (f"{activo['nombre']} — {activo.get('url', '')}" if activo
+                        else (campus or {}).get("env", {}).get("MOODLE_URL", "")),
             "si_falla": "Instalá la skill tup-campus-navigator y seguí su instalación (install.sh).",
         },
         {
@@ -108,6 +125,94 @@ async def estado():
 @app.get("/api/campus")
 async def campus():
     return {"campus": config.listar_campus(), "activo": config.tenant_activo()}
+
+
+class CampusActivo(BaseModel):
+    id: str
+
+
+@app.post("/api/campus/activo")
+async def campus_activo(p: CampusActivo):
+    """Cambia el campus activo. Lo lee la skill en cada llamada, así que rige para la próxima tarea."""
+    if _hay_tarea_ocupada():
+        raise HTTPException(409, "Hay una tarea trabajando. Esperá a que termine para cambiar de campus.")
+    try:
+        config.set_tenant_activo(p.id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    return {"campus": config.listar_campus(), "activo": config.tenant_activo()}
+
+
+class CampusNuevo(BaseModel):
+    nombre: str
+    url: str
+    moodle_user: str
+    moodle_pass: str
+    activeia_user: str = ""
+    activeia_pass: str = ""
+
+
+def _hay_tarea_ocupada() -> bool:
+    return any(getattr(s, "ocupada", False) for s in agente.SESIONES.values())
+
+
+def _slug(nombre: str) -> str:
+    plano = unicodedata.normalize("NFD", nombre.lower()).encode("ascii", "ignore").decode()
+    base = re.sub(r"[^a-z0-9]+", "-", plano).strip("-")[:34].strip("-") or "campus"
+    usados = {c["id"].lower() for c in config.listar_campus()}
+    candidato, n = base, 2
+    while candidato in usados:
+        candidato = f"{base}-{n}"
+        n += 1
+    return candidato
+
+
+@app.post("/api/campus")
+async def campus_alta(p: CampusNuevo):
+    """
+    Agrega un campus: prueba el login (Moodle y, si se cargó, Active-IA), guarda los datos
+    de acceso en el equipo, descubre materias y comisiones y lo deja como campus activo.
+    """
+    url = p.url.strip().rstrip("/")
+    if not re.match(r"^https?://[^\s/]+", url):
+        raise HTTPException(400, "La dirección del campus tiene que empezar con https:// (por ejemplo https://campus.miuniversidad.edu.ar).")
+    if not p.nombre.strip() or not p.moodle_user.strip() or not p.moodle_pass:
+        raise HTTPException(400, "Falta el nombre, el usuario o la contraseña del campus.")
+    if bool(p.activeia_user.strip()) != bool(p.activeia_pass):
+        raise HTTPException(400, "Para Active-IA hacen falta el usuario y la contraseña, o ninguno de los dos.")
+    if _hay_tarea_ocupada():
+        raise HTTPException(409, "Hay una tarea trabajando. Esperá a que termine para agregar un campus.")
+    mcp = config.mcp_campus()
+    if not mcp or not mcp.get("command") or not mcp.get("args"):
+        raise HTTPException(400, "No encuentro la skill del campus instalada; no puedo probar la conexión.")
+
+    tenant_id = _slug(p.nombre)
+    entrada = json.dumps({
+        "tenant_id": tenant_id, "nombre": p.nombre.strip(), "url": url,
+        "moodle_user": p.moodle_user.strip(), "moodle_pass": p.moodle_pass,
+        "activeia_user": p.activeia_user.strip(), "activeia_pass": p.activeia_pass,
+    })
+    # Entorno sin MOODLE_*/ACTIVEIA_*: el alta no debe heredar el campus con el que arrancó el MCP.
+    entorno = {k: v for k, v in os.environ.items() if not k.startswith(("MOODLE_", "ACTIVEIA_"))}
+    entorno.update({k: v for k, v in (mcp.get("env") or {}).items() if not k.startswith(("MOODLE_", "ACTIVEIA_"))})
+    entorno["PYTHONIOENCODING"] = "utf-8"
+    entorno["PYTHONUTF8"] = "1"
+    runner = Path(__file__).with_name("alta_campus.py")
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.run, [mcp["command"], str(runner), str(mcp["args"][0])],
+            input=entrada, capture_output=True, text=True, timeout=240, env=entorno, encoding="utf-8", errors="replace",
+        )
+        res = json.loads(proc.stdout.strip().splitlines()[-1])
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "El campus tardó demasiado en responder. Probá de nuevo en un rato.")
+    except (OSError, ValueError, IndexError):
+        log.exception("alta de campus: el subproceso no devolvió un resultado")
+        raise HTTPException(500, "No pude probar la conexión con el campus.")
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("error") or "No pude conectarme con esos datos.")
+    config.set_tenant_activo(tenant_id)
+    return {"campus": config.listar_campus(), "activo": config.tenant_activo(), "detalle": res.get("detalle", {})}
 
 
 @app.get("/api/catalogo")
@@ -285,13 +390,6 @@ async def tarea(p: Pedido):
         receta = recetas.por_id(p.receta)
         if receta is None:
             raise HTTPException(404, "Esa acción no existe.")
-        if p.valores.get("campus"):
-            permitidos = {f"{c.get('nombre')} (campus {c.get('id')})" for c in config.listar_campus()}
-            if p.valores["campus"] not in permitidos:
-                # Un valor de campus que no vino del selector (manipulado a mano) se
-                # descarta como si no se hubiera completado, en vez de colarse tal cual
-                # en el prompt: ahí podría inyectar texto con `[[`/`]]`.
-                p.valores = {**p.valores, "campus": ""}
         falta = recetas.faltantes(receta, p.valores)
         if falta:
             raise HTTPException(400, "Falta completar: " + ", ".join(falta))

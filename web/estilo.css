@@ -146,7 +146,7 @@ form.formulario { display: grid; gap: 22px; max-width: 560px; }
 .campo label { font-weight: 600; font-size: 14px; }
 .campo .opcional { font-weight: 500; color: var(--tinta-tenue); }
 .campo .ayuda { font-size: 13px; color: var(--tinta-media); font-family: var(--sans); }
-input[type="text"], select, textarea {
+input[type="text"], input[type="url"], input[type="password"], select, textarea {
   font: 400 15px/1.5 var(--serif); color: var(--tinta);
   background: var(--papel); border: 1px solid var(--borde); border-radius: 10px;
   padding: 10px 12px; width: 100%;
@@ -269,3 +269,24 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--tinta); out
   .accion { padding: 12px 8px; }
   h1 { font-size: 25px; }
 }
+
+/* ---------------------------------------------------------------- campus */
+.campus-chip {
+  display: flex; align-items: center; gap: 8px; font-size: 13px; text-decoration: none;
+  padding: 6px 12px; border-radius: 999px; border: 1px solid var(--borde); background: var(--papel-nota);
+}
+.campus-chip[hidden] { display: none; }
+.campus-chip:hover { border-color: var(--tinta-media); }
+.campus-etiqueta { color: var(--tinta-media); font-weight: 500; }
+.campus-lista { list-style: none; margin: 0 0 8px; padding: 0; display: grid; gap: 8px; max-width: 640px; }
+.campus-item {
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  padding: 14px 16px; border: 1px solid var(--borde); border-radius: 12px;
+}
+.campus-item.activo { border-color: var(--verificado); background: var(--papel-nota); }
+.campus-item .campus-datos { display: grid; gap: 2px; min-width: 0; }
+.campus-item .campus-datos span { font-size: 13px; color: var(--tinta-media); overflow-wrap: anywhere; }
+.campus-insignia { font-size: 12px; font-weight: 600; color: var(--verificado); font-family: var(--sans); }
+.campus-form { margin-top: 12px; }
+.campus-form fieldset { border: 1px solid var(--borde); border-radius: 12px; padding: 16px; display: grid; gap: 18px; margin: 0; }
+.campus-form legend { font: 600 13px var(--sans); padding: 0 8px; color: var(--tinta-media); }

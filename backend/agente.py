@@ -92,6 +92,7 @@ def _dentro(ruta: str, bases: list[Path]) -> bool:
 
 PASOS = {
     "mis_datos": "Leyendo tus materias y comisiones",
+    "mapear_mis_datos": "Buscando tus materias y comisiones asignadas",
     "aulas": "Leyendo tus materias y comisiones",
     "mi_comision": "Mirando tu comisión",
     "descubrir_cursos": "Buscando tus materias en el campus",

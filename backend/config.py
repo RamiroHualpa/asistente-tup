@@ -61,7 +61,8 @@ def salidas_campus() -> Path:
     instalación que todavía no tocó el layout por tenant.
     """
     por_tenant = _tenant_dir() / "salidas"
-    if por_tenant.is_dir():
+    if por_tenant.is_dir() or tenant_activo() != "tup":
+        # Un campus que no es TUP nunca cae a la carpeta flat: es de TUP.
         return por_tenant
     return moodle_skill_dir() / "salidas"
 
@@ -69,7 +70,7 @@ def salidas_campus() -> Path:
 def mis_datos_path() -> Path:
     """Igual que `salidas_campus()`: por tenant si existe, si no la flat legacy."""
     por_tenant = _tenant_dir() / "mis_datos.json"
-    if por_tenant.is_file():
+    if por_tenant.is_file() or tenant_activo() != "tup":
         return por_tenant
     return moodle_skill_dir() / "mis_datos.json"
 
@@ -107,6 +108,59 @@ def listar_campus() -> list[dict]:
         if isinstance(datos, list):
             return [d for d in datos if isinstance(d, dict) and d.get("id")]
     return []
+
+
+def set_tenant_activo(tenant_id: str) -> None:
+    """Cambia el campus activo (mismo `estado.json` que lee la skill). Sólo ids dados de alta."""
+    if tenant_id not in {c["id"] for c in listar_campus()}:
+        raise ValueError(f"El campus «{tenant_id}» no está dado de alta.")
+    archivo = moodle_skill_dir() / "estado.json"
+    archivo.parent.mkdir(parents=True, exist_ok=True)
+    archivo.write_text(json.dumps({"tenant_activo": tenant_id}, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def campus_activo() -> dict | None:
+    """La entrada de `tenants.json` del campus activo (`{id, nombre, url}`), si está registrada."""
+    activo = tenant_activo()
+    return next((c for c in listar_campus() if c["id"] == activo), None)
+
+
+def catalogo_descubierto() -> dict:
+    """
+    Materias y comisiones del campus activo cuando no hay `mis_datos.json` (un campus
+    recién agregado): salen de `aulas.json` / `comisiones.json`, lo que dejó
+    `agregar_campus` al descubrirlas. Devuelve la misma forma que `mis_datos`
+    (`{"cursos": [...]}`); comisiones = todas las del curso (no se conoce el reparto).
+    """
+    base = _tenant_dir()
+
+    def leer_json(nombre: str) -> dict:
+        try:
+            d = json.loads((base / nombre).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return d if isinstance(d, dict) else {}
+
+    comisiones = {
+        m.get("course_id"): m.get("comisiones") or []
+        for m in leer_json("comisiones.json").get("materias", [])
+        if isinstance(m, dict)
+    }
+    cursos = []
+    for m in leer_json("aulas.json").get("materias", []):
+        if not isinstance(m, dict) or m.get("course_id") is None:
+            continue
+        cursos.append({
+            "course_id": m["course_id"],
+            "nombre": m.get("materia") or str(m["course_id"]),
+            "comisiones_del_tutor": [
+                {"group_id": g["group_id"], "comision": g.get("comision") or str(g["group_id"])}
+                for g in comisiones.get(m["course_id"], [])
+                if isinstance(g, dict) and "group_id" in g
+            ],
+            "tareas": [],
+        })
+    return {"cursos": cursos}
 
 
 def _documentos() -> Path:
