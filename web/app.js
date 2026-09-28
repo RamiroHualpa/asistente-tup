@@ -43,11 +43,15 @@ function montar(...nodos) {
 
 // ------------------------------------------------------------------ arranque
 async function cargar() {
-  const [estado, catalogo, campus] = await Promise.all([api('/api/estado'), api('/api/catalogo'), api('/api/campus')]);
-  E.estado = estado;
-  E.catalogo = catalogo;
-  E.campus = campus;
-  const mal = estado.chequeos.filter((c) => !c.ok);
+  // /api/campus es no-esencial: si falla (o el archivo del campus está corrompido)
+  // el resto de la pantalla (catálogo, estado) no tiene por qué quedar inutilizable.
+  const [estadoR, catalogoR, campusR] = await Promise.allSettled([api('/api/estado'), api('/api/catalogo'), api('/api/campus')]);
+  if (estadoR.status === 'rejected') throw estadoR.reason;
+  if (catalogoR.status === 'rejected') throw catalogoR.reason;
+  E.estado = estadoR.value;
+  E.catalogo = catalogoR.value;
+  E.campus = campusR.status === 'fulfilled' ? campusR.value : { campus: [], activo: null };
+  const mal = E.estado.chequeos.filter((c) => !c.ok);
   document.getElementById('estado-punto').className = 'punto ' + (mal.length ? 'mal' : 'ok');
   document.getElementById('estado-texto').textContent = mal.length ? `Falta configurar ${mal.length === 1 ? 'algo' : mal.length + ' cosas'}` : 'Todo listo';
 }
@@ -134,6 +138,9 @@ function verReceta(id) {
 }
 
 function campo(c, valores, bus) {
+  // Sin tenants dados de alta (todavía la realidad de cualquier instalación existente)
+  // no hay nada entre qué elegir: no se renderiza nada, nunca un input de texto libre.
+  if (c.tipo === 'campus' && !(E.campus?.campus || []).length) return null;
   const id = 'c-' + c.id;
   const etiqueta = h('label', { for: id }, c.etiqueta, c.opcional && !/opcional/i.test(c.etiqueta) ? h('span', { class: 'opcional' }, ' (opcional)') : null);
   const ayuda = c.ayuda ? h('span', { class: 'ayuda' }, c.ayuda) : null;
@@ -151,7 +158,10 @@ function campo(c, valores, bus) {
     });
     control.replaceChildren(...opciones);
     control.addEventListener('change', () => set(control.value));
-    set(control.value);
+    // A propósito NO se llama a set() acá: dejar el campo en su valor pre-seleccionado
+    // (el campus activo, mostrado como tal) no cuenta como una elección explícita, así
+    // que valores.campus queda vacío y el bloque [[...]] del pedido no se agrega —
+    // recién se completa si la persona lo toca (evento 'change' de arriba).
   } else if ((c.tipo === 'curso' || c.tipo === 'comision' || c.tipo === 'tarea') && cursos.length) {
     control = h('select', { id });
     const llenar = () => {
@@ -344,6 +354,10 @@ async function correr(pedido) {
           case 'fin':
             cerrarPaso();
             if (pintar) { cancelAnimationFrame(pintar); render(); }
+            // Si la receta usó `usar_campus` el tenant activo pudo haber cambiado en
+            // ~/.moodle-skill/estado.json; se refresca acá (no sólo al guardar config)
+            // para que la próxima pantalla de receta muestre el «(activo)» correcto.
+            api('/api/campus').then((c) => { E.campus = c; }).catch(() => {});
             break;
         }
       }
