@@ -285,6 +285,13 @@ async def tarea(p: Pedido):
         receta = recetas.por_id(p.receta)
         if receta is None:
             raise HTTPException(404, "Esa acción no existe.")
+        if p.valores.get("campus"):
+            permitidos = {f"{c.get('nombre')} (campus {c.get('id')})" for c in config.listar_campus()}
+            if p.valores["campus"] not in permitidos:
+                # Un valor de campus que no vino del selector (manipulado a mano) se
+                # descarta como si no se hubiera completado, en vez de colarse tal cual
+                # en el prompt: ahí podría inyectar texto con `[[`/`]]`.
+                p.valores = {**p.valores, "campus": ""}
         falta = recetas.faltantes(receta, p.valores)
         if falta:
             raise HTTPException(400, "Falta completar: " + ", ".join(falta))
