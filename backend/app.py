@@ -43,7 +43,7 @@ log = logging.getLogger("asistente")
 
 def _mis_datos() -> dict:
     try:
-        return json.loads(config.MIS_DATOS.read_text(encoding="utf-8"))
+        return json.loads(config.mis_datos_path().read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -103,6 +103,11 @@ async def estado():
         "carpeta_trabajo": str(cfg["carpeta_trabajo"]),
         "carpeta_informes": str(cfg["carpeta_informes"]),
     }
+
+
+@app.get("/api/campus")
+async def campus():
+    return {"campus": config.listar_campus(), "activo": config.tenant_activo()}
 
 
 @app.get("/api/catalogo")
@@ -204,7 +209,7 @@ def _nuevos(antes: dict[str, float], despues: dict[str, float]) -> list[str]:
 
 def _copiar_informes(nuevos: list[str], informes: Path) -> list[str]:
     """Los PDF que la skill del campus deja en ~/.moodle-skill/salidas se copian a la carpeta de informes."""
-    salidas = config.SALIDAS_CAMPUS.resolve()
+    salidas = config.salidas_campus().resolve()
     copiados = []
     for p in nuevos:
         ruta = Path(p)
@@ -223,7 +228,7 @@ class Abrir(BaseModel):
 
 def _permitida(ruta: Path) -> bool:
     cfg = config.leer()
-    bases = [cfg["carpeta_trabajo"], cfg["carpeta_informes"], config.SALIDAS_CAMPUS]
+    bases = [cfg["carpeta_trabajo"], cfg["carpeta_informes"], config.salidas_campus()]
     try:
         r = ruta.resolve()
     except OSError:
@@ -291,7 +296,7 @@ async def tarea(p: Pedido):
         raise HTTPException(400, "No hay nada para hacer.")
 
     cfg = config.leer()
-    bases = [cfg["carpeta_trabajo"], config.SALIDAS_CAMPUS]
+    bases = [cfg["carpeta_trabajo"], config.salidas_campus()]
 
     async def stream():
         nonlocal sesion
@@ -325,7 +330,7 @@ async def tarea(p: Pedido):
 def _es_de_salidas(ruta: str, copiados: list[str]) -> bool:
     """Un PDF de salidas que ya se copió a Informes se muestra una sola vez: la copia."""
     nombres = {Path(c).name for c in copiados}
-    return Path(ruta).name in nombres and config.SALIDAS_CAMPUS.resolve() in Path(ruta).resolve().parents
+    return Path(ruta).name in nombres and config.salidas_campus().resolve() in Path(ruta).resolve().parents
 
 
 @app.post("/api/tarea/{sid}/responder")

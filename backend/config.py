@@ -29,12 +29,55 @@ CONFIG_DIR = HOME / ".asistente-tup"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 LOG_FILE = CONFIG_DIR / "asistente.log"
 
-MOODLE_SKILL_DIR = HOME / ".moodle-skill"
-SALIDAS_CAMPUS = MOODLE_SKILL_DIR / "salidas"
-MIS_DATOS = MOODLE_SKILL_DIR / "mis_datos.json"
 CAMPUS_SKILL = HOME / ".claude" / "skills" / "tup-campus-navigator"
 
 PUERTO = 8790
+
+
+def moodle_skill_dir() -> Path:
+    """
+    Raíz de la skill del campus. Función (no constante): el tutor puede tener más
+    de un campus dado de alta (multi-tenant) y cambiar cuál está activo mientras
+    este proceso sigue corriendo, así que no se puede fijar una sola vez al importar.
+    """
+    return HOME / ".moodle-skill"
+
+
+def salidas_campus() -> Path:
+    return moodle_skill_dir() / "salidas"
+
+
+def mis_datos_path() -> Path:
+    return moodle_skill_dir() / "mis_datos.json"
+
+
+def tenant_activo() -> str:
+    """
+    Qué campus está activo ahora mismo, según `~/.moodle-skill/estado.json`
+    (`tenant_activo`). Sin ese archivo, o si no se puede leer, es una instalación
+    de un solo campus: `"tup"`, el mismo default que usa la skill del campus.
+    """
+    archivo = moodle_skill_dir() / "estado.json"
+    if archivo.is_file():
+        try:
+            estado = json.loads(archivo.read_text(encoding="utf-8"))
+            return estado.get("tenant_activo") or "tup"
+        except (OSError, json.JSONDecodeError):
+            pass
+    return "tup"
+
+
+def listar_campus() -> list[dict]:
+    """Los campus dados de alta, desde `~/.moodle-skill/tenants.json`. Sin ese archivo, ninguno."""
+    archivo = moodle_skill_dir() / "tenants.json"
+    if archivo.is_file():
+        try:
+            datos = json.loads(archivo.read_text(encoding="utf-8"))
+            if isinstance(datos, list):
+                return datos
+        except (OSError, json.JSONDecodeError):
+            pass
+    return []
 
 
 def _documentos() -> Path:
