@@ -43,9 +43,10 @@ function montar(...nodos) {
 
 // ------------------------------------------------------------------ arranque
 async function cargar() {
-  const [estado, catalogo] = await Promise.all([api('/api/estado'), api('/api/catalogo')]);
+  const [estado, catalogo, campus] = await Promise.all([api('/api/estado'), api('/api/catalogo'), api('/api/campus')]);
   E.estado = estado;
   E.catalogo = catalogo;
+  E.campus = campus;
   const mal = estado.chequeos.filter((c) => !c.ok);
   document.getElementById('estado-punto').className = 'punto ' + (mal.length ? 'mal' : 'ok');
   document.getElementById('estado-texto').textContent = mal.length ? `Falta configurar ${mal.length === 1 ? 'algo' : mal.length + ' cosas'}` : 'Todo listo';
@@ -141,7 +142,17 @@ function campo(c, valores, bus) {
 
   const set = (v) => { valores[c.id] = v; };
 
-  if ((c.tipo === 'curso' || c.tipo === 'comision' || c.tipo === 'tarea') && cursos.length) {
+  if (c.tipo === 'campus' && (E.campus?.campus || []).length) {
+    control = h('select', { id });
+    const opciones = [h('option', { value: '' }, c.opcional ? 'El activo' : 'Elegí…')];
+    E.campus.campus.forEach((k) => {
+      const activo = String(k.id) === String(E.campus.activo);
+      opciones.push(h('option', { value: `${k.nombre} (campus ${k.id})`, selected: activo }, k.nombre + (activo ? ' (activo)' : '')));
+    });
+    control.replaceChildren(...opciones);
+    control.addEventListener('change', () => set(control.value));
+    set(control.value);
+  } else if ((c.tipo === 'curso' || c.tipo === 'comision' || c.tipo === 'tarea') && cursos.length) {
     control = h('select', { id });
     const llenar = () => {
       const opciones = [h('option', { value: '' }, c.opcional ? 'Todas' : 'Elegí…')];
