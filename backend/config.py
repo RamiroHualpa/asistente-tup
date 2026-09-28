@@ -34,133 +34,136 @@ CAMPUS_SKILL = HOME / ".claude" / "skills" / "tup-campus-navigator"
 PUERTO = 8790
 
 
+CAMPUS_DIR = CONFIG_DIR / "campus"
+CAMPUS_REGISTRO = CONFIG_DIR / "campus.json"
+
+TUP_ID = "tup"
+TUP_NOMBRE = "TUP (UTN)"
+TUP_URL = "https://tup.sied.utn.edu.ar"
+
+# Variables de entorno con las que la skill del campus (sin modificar) elige a qué campus
+# y con qué credenciales opera: `MOODLE_SKILL_HOME` (carpeta de datos) y las del `.env`.
+_ENTORNO_CAMPUS = ("MOODLE_URL", "MOODLE_USER", "MOODLE_PASS", "ACTIVEIA_USER", "ACTIVEIA_PASS", "MOODLE_SKILL_HOME")
+
+
+# --------------------------------------------------------------------------- #
+# Campus (multi-campus, todo del lado del asistente)
+#
+# La skill del campus es de un solo campus por proceso: toma la carpeta de datos de
+# `MOODLE_SKILL_HOME` y la URL/credenciales del entorno o de su `.env`. El asistente no
+# la toca: guarda acá los campus dados de alta y, en cada tarea, arranca el MCP con el
+# entorno del campus activo. TUP es el de siempre (la carpeta `~/.moodle-skill` y la URL
+# de la config de Claude Code) y no se guarda en el registro.
+# --------------------------------------------------------------------------- #
+
+
 def moodle_skill_dir() -> Path:
-    """
-    Raíz (flat, legacy) de la skill del campus: ``~/.moodle-skill``. Sigue existiendo
-    como función (no constante) porque varias cosas cuelgan de ella, pero para leer
-    datos del tutor lo que hay que usar es `_tenant_dir()` / `salidas_campus()` /
-    `mis_datos_path()`, que resuelven bajo el tenant activo.
-    """
+    """Carpeta de datos de la skill del campus para TUP (el campus de siempre): `~/.moodle-skill`."""
     return HOME / ".moodle-skill"
 
 
-def _tenant_dir() -> Path:
-    """
-    Carpeta del tenant activo ahora mismo: `~/.moodle-skill/<tenant_activo()>/`.
-    Función (no constante): el tutor puede tener más de un campus dado de alta
-    (multi-tenant) y cambiar cuál está activo mientras este proceso sigue corriendo,
-    así que no se puede fijar una sola vez al importar.
-    """
-    return moodle_skill_dir() / tenant_activo()
+def _registro() -> dict:
+    """`~/.asistente-tup/campus.json`: `{"activo": id, "campus": [{id, nombre, url}]}` (sin TUP)."""
+    try:
+        d = json.loads(CAMPUS_REGISTRO.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
 
 
-def salidas_campus() -> Path:
-    """
-    `salidas/` del tenant activo si ya existe (ahí escribe el MCP una vez migrado);
-    si no, cae a la carpeta flat legacy `~/.moodle-skill/salidas` para no romper una
-    instalación que todavía no tocó el layout por tenant.
-    """
-    por_tenant = _tenant_dir() / "salidas"
-    if por_tenant.is_dir() or tenant_activo() != "tup":
-        # Un campus que no es TUP nunca cae a la carpeta flat: es de TUP.
-        return por_tenant
-    return moodle_skill_dir() / "salidas"
+def _guardar_registro(datos: dict) -> None:
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    CAMPUS_REGISTRO.write_text(json.dumps(datos, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def mis_datos_path() -> Path:
-    """Igual que `salidas_campus()`: por tenant si existe, si no la flat legacy."""
-    por_tenant = _tenant_dir() / "mis_datos.json"
-    if por_tenant.is_file() or tenant_activo() != "tup":
-        return por_tenant
-    return moodle_skill_dir() / "mis_datos.json"
-
-
-def tenant_activo() -> str:
-    """
-    Qué campus está activo ahora mismo, según `~/.moodle-skill/estado.json`
-    (`tenant_activo`). Sin ese archivo, si no se puede leer/decodificar, o si su
-    forma no es la esperada (no es un objeto, o `tenant_activo` no es un string),
-    es una instalación de un solo campus: `"tup"`, el mismo default que usa la
-    skill del campus.
-    """
-    archivo = moodle_skill_dir() / "estado.json"
-    if archivo.is_file():
-        try:
-            estado = json.loads(archivo.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            # ValueError cubre json.JSONDecodeError y UnicodeDecodeError (bytes no-UTF-8).
-            estado = None
-        if isinstance(estado, dict):
-            tenant = estado.get("tenant_activo")
-            if isinstance(tenant, str) and tenant.strip():
-                return tenant
-    return "tup"
+def _url_tup() -> str:
+    return ((mcp_campus() or {}).get("env") or {}).get("MOODLE_URL") or TUP_URL
 
 
 def listar_campus() -> list[dict]:
-    """Los campus dados de alta, desde `~/.moodle-skill/tenants.json`. Sin ese archivo, ninguno."""
-    archivo = moodle_skill_dir() / "tenants.json"
-    if archivo.is_file():
-        try:
-            datos = json.loads(archivo.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            datos = None
-        if isinstance(datos, list):
-            return [d for d in datos if isinstance(d, dict) and d.get("id")]
-    return []
+    """TUP primero (siempre) y después los campus dados de alta, cada uno `{id, nombre, url}`."""
+    extra = [
+        {"id": c["id"], "nombre": c.get("nombre") or c["id"], "url": c.get("url", "")}
+        for c in (_registro().get("campus") or [])
+        if isinstance(c, dict) and isinstance(c.get("id"), str) and c["id"] and c["id"] != TUP_ID
+    ]
+    return [{"id": TUP_ID, "nombre": TUP_NOMBRE, "url": _url_tup()}, *extra]
+
+
+def tenant_activo() -> str:
+    """Campus activo; si el guardado ya no existe (o no hay), TUP."""
+    activo = _registro().get("activo")
+    return activo if isinstance(activo, str) and activo in {c["id"] for c in listar_campus()} else TUP_ID
+
+
+def campus_activo() -> dict:
+    activo = tenant_activo()
+    return next(c for c in listar_campus() if c["id"] == activo)
+
+
+def datos_dir(tenant_id: str | None = None) -> Path:
+    """Carpeta de datos (`.env`, `mis_datos.json`, `salidas/`) de un campus."""
+    tid = tenant_id or tenant_activo()
+    return moodle_skill_dir() if tid == TUP_ID else CAMPUS_DIR / tid
+
+
+def salidas_campus() -> Path:
+    return datos_dir() / "salidas"
+
+
+def mis_datos_path() -> Path:
+    return datos_dir() / "mis_datos.json"
 
 
 def set_tenant_activo(tenant_id: str) -> None:
-    """Cambia el campus activo (mismo `estado.json` que lee la skill). Sólo ids dados de alta."""
+    """Cambia el campus activo. Sólo ids dados de alta."""
     if tenant_id not in {c["id"] for c in listar_campus()}:
         raise ValueError(f"El campus «{tenant_id}» no está dado de alta.")
-    archivo = moodle_skill_dir() / "estado.json"
-    archivo.parent.mkdir(parents=True, exist_ok=True)
-    archivo.write_text(json.dumps({"tenant_activo": tenant_id}, ensure_ascii=False, indent=2), encoding="utf-8")
+    _guardar_registro({**_registro(), "activo": tenant_id})
 
 
-def campus_activo() -> dict | None:
-    """La entrada de `tenants.json` del campus activo (`{id, nombre, url}`), si está registrada."""
-    activo = tenant_activo()
-    return next((c for c in listar_campus() if c["id"] == activo), None)
+def registrar_campus(tenant_id: str, nombre: str, url: str) -> None:
+    """Da de alta un campus (sin activarlo). Rechaza TUP y los ids ya usados."""
+    if tenant_id.lower() in {c["id"].lower() for c in listar_campus()}:
+        raise ValueError(f"Ya existe un campus «{tenant_id}».")
+    reg = _registro()
+    reg["campus"] = [*(reg.get("campus") or []), {"id": tenant_id, "nombre": nombre, "url": url}]
+    _guardar_registro(reg)
 
 
-def catalogo_descubierto() -> dict:
+def escribir_env(tenant_id: str, valores: dict[str, str]) -> Path:
     """
-    Materias y comisiones del campus activo cuando no hay `mis_datos.json` (un campus
-    recién agregado): salen de `aulas.json` / `comisiones.json`, lo que dejó
-    `agregar_campus` al descubrirlas. Devuelve la misma forma que `mis_datos`
-    (`{"cursos": [...]}`); comisiones = todas las del curso (no se conoce el reparto).
+    Guarda las credenciales del campus en su `.env` (el mismo formato que lee la skill).
+    En Windows el `chmod 600` sólo marca el archivo como de sólo lectura; en Linux/macOS sí
+    restringe el acceso.
     """
-    base = _tenant_dir()
+    carpeta = datos_dir(tenant_id)
+    carpeta.mkdir(parents=True, exist_ok=True)
+    ruta = carpeta / ".env"
+    cuerpo = "# Credenciales del campus. NO subir a git.\n" + "".join(f"{k}={v}\n" for k, v in valores.items() if v)
+    ruta.write_text(cuerpo, encoding="utf-8")
+    try:
+        os.chmod(ruta, 0o600)
+    except OSError:
+        pass
+    return ruta
 
-    def leer_json(nombre: str) -> dict:
-        try:
-            d = json.loads((base / nombre).read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
-        return d if isinstance(d, dict) else {}
 
-    comisiones = {
-        m.get("course_id"): m.get("comisiones") or []
-        for m in leer_json("comisiones.json").get("materias", [])
-        if isinstance(m, dict)
-    }
-    cursos = []
-    for m in leer_json("aulas.json").get("materias", []):
-        if not isinstance(m, dict) or m.get("course_id") is None:
-            continue
-        cursos.append({
-            "course_id": m["course_id"],
-            "nombre": m.get("materia") or str(m["course_id"]),
-            "comisiones_del_tutor": [
-                {"group_id": g["group_id"], "comision": g.get("comision") or str(g["group_id"])}
-                for g in comisiones.get(m["course_id"], [])
-                if isinstance(g, dict) and "group_id" in g
-            ],
-            "tareas": [],
-        })
-    return {"cursos": cursos}
+def mcp_campus_activo() -> dict | None:
+    """
+    La definición del MCP `moodle-tutor` para el campus activo. TUP: la de siempre. Otro
+    campus: la misma skill, con su carpeta de datos y su URL en el entorno (las credenciales
+    las lee la skill del `.env` de esa carpeta, así no viajan por argumentos).
+    """
+    base = mcp_campus()
+    if not base:
+        return None
+    activo = campus_activo()
+    if activo["id"] == TUP_ID:
+        return base
+    entorno = {k: v for k, v in (base.get("env") or {}).items() if k not in _ENTORNO_CAMPUS}
+    entorno.update({"MOODLE_SKILL_HOME": str(datos_dir(activo["id"])), "MOODLE_URL": activo["url"]})
+    return {**base, "env": entorno}
 
 
 def _documentos() -> Path:

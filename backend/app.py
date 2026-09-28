@@ -46,21 +46,8 @@ def _mis_datos() -> dict:
     try:
         datos = json.loads(config.mis_datos_path().read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        datos = {}
-    if not isinstance(datos, dict):
-        datos = {}
-    if not datos.get("cursos"):
-        # Campus recién agregado: todavía sin mis_datos, se ofrece lo descubierto.
-        datos = {**datos, **config.catalogo_descubierto()}
-    else:
-        # Materias donde no figurás en ninguna comisión: se ofrecen todas las del curso
-        # (lo descubierto al dar de alta el campus) para poder elegir igual.
-        todas = {c["course_id"]: c for c in config.catalogo_descubierto()["cursos"]}
-        datos = {**datos, "cursos": [
-            {**c, "comisiones_del_tutor": c.get("comisiones_del_tutor") or todas.get(c.get("course_id"), {}).get("comisiones_del_tutor", [])}
-            for c in datos["cursos"] if isinstance(c, dict)
-        ]}
-    return datos
+        return {}
+    return datos if isinstance(datos, dict) else {}
 
 
 def _programas_faltantes(requiere: dict | None) -> list[str]:
@@ -90,8 +77,7 @@ async def estado():
             "id": "campus",
             "ok": bool(campus),
             "titulo": "Conexión con el campus configurada",
-            "detalle": (f"{activo['nombre']} — {activo.get('url', '')}" if activo
-                        else (campus or {}).get("env", {}).get("MOODLE_URL", "")),
+            "detalle": f"{activo['nombre']} — {activo.get('url', '')}",
             "si_falla": "Instalá la skill tup-campus-navigator y seguí su instalación (install.sh).",
         },
         {
@@ -170,8 +156,8 @@ def _slug(nombre: str) -> str:
 @app.post("/api/campus")
 async def campus_alta(p: CampusNuevo):
     """
-    Agrega un campus: prueba el login (Moodle y, si se cargó, Active-IA), guarda los datos
-    de acceso en el equipo, descubre materias y comisiones y lo deja como campus activo.
+    Agrega un campus: prueba el login de Moodle, descubre materias y comisiones, guarda los datos
+    de acceso en el equipo (recién si todo salió bien) y lo deja como campus activo.
     """
     url = p.url.strip().rstrip("/")
     if not re.match(r"^https?://[^\s/]+", url):
@@ -187,12 +173,8 @@ async def campus_alta(p: CampusNuevo):
         raise HTTPException(400, "No encuentro la skill del campus instalada; no puedo probar la conexión.")
 
     tenant_id = _slug(p.nombre)
-    entrada = json.dumps({
-        "tenant_id": tenant_id, "nombre": p.nombre.strip(), "url": url,
-        "moodle_user": p.moodle_user.strip(), "moodle_pass": p.moodle_pass,
-        "activeia_user": p.activeia_user.strip(), "activeia_pass": p.activeia_pass,
-    })
-    # Entorno sin MOODLE_*/ACTIVEIA_*: el alta no debe heredar el campus con el que arrancó el MCP.
+    entrada = json.dumps({"url": url, "moodle_user": p.moodle_user.strip(), "moodle_pass": p.moodle_pass})
+    # Entorno sin MOODLE_*/ACTIVEIA_*: la prueba no debe heredar ningún campus ni credencial ajena.
     entorno = {k: v for k, v in os.environ.items() if not k.startswith(("MOODLE_", "ACTIVEIA_"))}
     entorno.update({k: v for k, v in (mcp.get("env") or {}).items() if not k.startswith(("MOODLE_", "ACTIVEIA_"))})
     entorno["PYTHONIOENCODING"] = "utf-8"
@@ -211,8 +193,21 @@ async def campus_alta(p: CampusNuevo):
         raise HTTPException(500, "No pude probar la conexión con el campus.")
     if not res.get("ok"):
         raise HTTPException(400, res.get("error") or "No pude conectarme con esos datos.")
+
+    # Login y descubrimiento OK: recién ahora se guarda algo.
+    try:
+        config.registrar_campus(tenant_id, p.nombre.strip(), url)
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+    config.escribir_env(tenant_id, {
+        "MOODLE_USER": p.moodle_user.strip(), "MOODLE_PASS": p.moodle_pass, "MOODLE_URL": url,
+        "ACTIVEIA_USER": p.activeia_user.strip(), "ACTIVEIA_PASS": p.activeia_pass,
+    })
+    (config.datos_dir(tenant_id) / "mis_datos.json").write_text(
+        json.dumps(res["mis_datos"], ensure_ascii=False, indent=2), encoding="utf-8")
     config.set_tenant_activo(tenant_id)
-    return {"campus": config.listar_campus(), "activo": config.tenant_activo(), "detalle": res.get("detalle", {})}
+    return {"campus": config.listar_campus(), "activo": config.tenant_activo(),
+            "detalle": {"cursos": len(res["mis_datos"]["cursos"]), "nota": res.get("nota")}}
 
 
 @app.get("/api/catalogo")
