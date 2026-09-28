@@ -73,7 +73,7 @@ def _es_escritura(tool: str, entrada: dict[str, Any]) -> bool:
 def _carpetas_escribibles(trabajo: Path) -> list[Path]:
     return [
         p.resolve()
-        for p in (trabajo, config.MOODLE_SKILL_DIR, config.CAMPUS_SKILL, Path(tempfile.gettempdir()))
+        for p in (trabajo, config.moodle_skill_dir(), config.CAMPUS_SKILL, Path(tempfile.gettempdir()))
         if p.exists()
     ]
 
