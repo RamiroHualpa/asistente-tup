@@ -8,7 +8,8 @@ Para sumar una acción nueva alcanza con agregar un dict a `RECETAS`:
 
 - `campos`: lo que se le pide a la persona. Tipos: `curso`, `comision`, `tarea`
   (se llenan con las comisiones del tutor), `archivo`, `archivos`, `texto`,
-  `parrafo`, `opcion`.
+  `parrafo`, `opcion`, `campus` (elegir contra qué campus dado de alta trabajar,
+  se llena con `/api/campus`).
 - `pedido`: el texto que recibe el agente. `{campo}` se reemplaza por lo que se
   cargó; si quedó vacío se usa su `vacio`, si lo tiene. Un bloque `[[ ... {campo} ... ]]`
   se omite entero si algún campo de adentro quedó vacío.
@@ -61,6 +62,13 @@ _COMISION_OPC = {
     "opcional": True,
     "ayuda": "Vacío = todas tus comisiones de esa materia.",
 }
+_CAMPUS_OPC = {
+    "id": "campus",
+    "tipo": "campus",
+    "etiqueta": "Campus",
+    "opcional": True,
+    "ayuda": "Vacío = el campus activo ahora mismo.",
+}
 
 RECETAS = [
     # ------------------------------------------------------------------ campus
@@ -70,10 +78,11 @@ RECETAS = [
         "titulo": "¿Qué me falta corregir?",
         "bajada": "Las entregas esperando nota, por comisión y tarea, empezando por la que más espera.",
         "resultado": "Una lista ordenada de lo pendiente. No cambia nada en el campus.",
-        "campos": [_CURSO_OPC],
+        "campos": [_CURSO_OPC, _CAMPUS_OPC],
         "pedido": (
             "Decime qué me falta corregir en {curso}. "
             "Agrupalo por comisión y tarea, y marcá cuántos días lleva esperando la entrega más vieja."
+            "[[ Trabajá contra el campus {campus} (usá usar_campus si hace falta).]]"
         ),
     },
     {
@@ -82,11 +91,12 @@ RECETAS = [
         "titulo": "Alumnos que dejaron de entrar",
         "bajada": "Quién hace días que no abre la materia, para escribirle antes de que abandone.",
         "resultado": "Una lista de alumnos con los días sin entrar a la materia. No cambia nada en el campus.",
-        "campos": [_CURSO, _COMISION_OPC],
+        "campos": [_CURSO, _COMISION_OPC, _CAMPUS_OPC],
         "pedido": (
             "Decime qué alumnos dejaron de entrar a la materia {curso}[[, comisión {comision}]]. "
             "Usá los días sin abrir ESTA materia (no el último acceso al campus en general) y separá "
             "los que nunca la abrieron de los que no se pudieron leer. Ordená del que más días lleva al que menos."
+            "[[ Trabajá contra el campus {campus} (usá usar_campus si hace falta).]]"
         ),
     },
     {
@@ -95,11 +105,12 @@ RECETAS = [
         "titulo": "Mensajes y foros sin responder",
         "bajada": "Las consultas de alumnos que siguen esperando respuesta.",
         "resultado": "Un resumen de cada consulta pendiente. Si pedís contestar alguna, te muestro el texto antes de enviarlo.",
-        "campos": [],
+        "campos": [_CAMPUS_OPC],
         "pedido": (
             "Revisá mis mensajes privados y los foros: ¿qué consultas de alumnos siguen sin respuesta? "
             "Para los mensajes usá un límite amplio (250) y mirá también las que el filtro descartó como cortesía, "
             "por si alguna es una consulta real. Resumí cada una en una línea y decime cuáles son urgentes."
+            "[[ Trabajá contra el campus {campus} (usá usar_campus si hace falta).]]"
         ),
     },
     {
@@ -108,10 +119,11 @@ RECETAS = [
         "titulo": "Informe de seguimiento en PDF",
         "bajada": "Un PDF con el estado de tus comisiones, listo para mandar.",
         "resultado": "Un archivo PDF que vas a poder abrir desde acá mismo.",
-        "campos": [_CURSO, _COMISION_OPC],
+        "campos": [_CURSO, _COMISION_OPC, _CAMPUS_OPC],
         "pedido": (
             "Armá el informe de seguimiento en PDF de la materia {curso}[[, comisión {comision}]]. "
             "Al terminar, decime dónde quedó el archivo."
+            "[[ Trabajá contra el campus {campus} (usá usar_campus si hace falta).]]"
         ),
     },
     {
@@ -120,11 +132,12 @@ RECETAS = [
         "titulo": "Panorama del curso (todas las comisiones)",
         "bajada": "La vista de profesor/coordinación: cómo viene cada comisión y quién tiene correcciones atrasadas.",
         "resultado": "Una tabla por comisión y, si querés, el PDF para coordinación. No cambia nada en el campus.",
-        "campos": [_CURSO],
+        "campos": [_CURSO, _CAMPUS_OPC],
         "pedido": (
             "Dame el panorama de todas las comisiones de la materia {curso}: por comisión, qué falta corregir, "
             "hace cuántos días espera la entrega más vieja y qué consultas de foro nadie contestó. "
             "Hechos por comisión, sin rankings de tutores."
+            "[[ Trabajá contra el campus {campus} (usá usar_campus si hace falta).]]"
         ),
     },
     {
@@ -143,10 +156,12 @@ RECETAS = [
                 "etiqueta": "Qué querés que mire (opcional)",
                 "opcional": True,
             },
+            _CAMPUS_OPC,
         ],
         "pedido": (
             "En la materia {curso}, abrí la entrega de {alumno} para la tarea «{tarea}». Mostrame qué entregó, "
             "proponeme una nota y una devolución[[ teniendo en cuenta esto: {criterio}]], y cargala sólo si la confirmo."
+            "[[ Trabajá contra el campus {campus} (usá usar_campus si hace falta).]]"
         ),
     },
     {
@@ -155,8 +170,11 @@ RECETAS = [
         "titulo": "Revisar cómo está armada el aula",
         "bajada": "Controla que no falten actividades, que los links funcionen y que todo sea consistente.",
         "resultado": "Un informe de lo que hay que arreglar. No cambia nada en el campus.",
-        "campos": [_CURSO],
-        "pedido": "Auditá el aula virtual de la materia {curso} y decime qué hay que arreglar, ordenado por importancia.",
+        "campos": [_CURSO, _CAMPUS_OPC],
+        "pedido": (
+            "Auditá el aula virtual de la materia {curso} y decime qué hay que arreglar, ordenado por importancia."
+            "[[ Trabajá contra el campus {campus} (usá usar_campus si hace falta).]]"
+        ),
     },
     {
         "id": "campus_libre",
@@ -164,8 +182,8 @@ RECETAS = [
         "titulo": "Otra consulta sobre el campus",
         "bajada": "Escribí con tus palabras lo que necesitás.",
         "resultado": "Si hace falta escribir algo en el campus, te lo muestro antes.",
-        "campos": [{"id": "texto", "tipo": "parrafo", "etiqueta": "¿Qué necesitás?"}],
-        "pedido": "{texto}",
+        "campos": [{"id": "texto", "tipo": "parrafo", "etiqueta": "¿Qué necesitás?"}, _CAMPUS_OPC],
+        "pedido": "{texto}[[ Trabajá contra el campus {campus} (usá usar_campus si hace falta).]]",
     },
     # ---------------------------------------------------------------- rúbricas
     {
