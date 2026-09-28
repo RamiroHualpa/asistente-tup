@@ -21,6 +21,12 @@ import re
 
 SKILLS = [
     {
+        "id": "propias",
+        "skill": None,  # no es una skill de Claude Code: siempre disponible
+        "titulo": "Mis acciones",
+        "bajada": "Tus propias tareas, armadas a tu gusto: quedan guardadas como un botón.",
+    },
+    {
         "id": "campus",
         "skill": "tup-campus-navigator",
         "titulo": "Campus y comisiones",
@@ -64,6 +70,38 @@ _COMISION_OPC = {
 }
 
 RECETAS = [
+    # ------------------------------------------------------------ mis acciones
+    {
+        "id": "crear_accion",
+        "skill": "propias",
+        "titulo": "Crear mi propia acción",
+        "bajada": "Contale a Claude qué tarea repetís y la deja guardada como un botón más, a tu gusto.",
+        "resultado": "Una acción nueva en «Mis acciones». Antes de guardarla vas a ver cómo quedó y la confirmás.",
+        "campos": [
+            {"id": "idea", "tipo": "parrafo", "etiqueta": "¿Qué querés automatizar?", "opcional": True,
+             "ayuda": "Una frase alcanza; Claude te va a hacer las preguntas que falten."},
+        ],
+        "pedido": (
+            "Ayudame a crear una acción propia para este asistente: un botón nuevo que repite una tarea que hago seguido. "
+            "[[La idea inicial es: {idea}. ]]\n\n"
+            "Cómo hacerlo:\n"
+            "1. Entrevistame con AskUserQuestion (opciones concretas, una o dos preguntas por vez) hasta entender: qué tarea es y "
+            "con qué skill o herramienta se resuelve (campus Moodle, rúbricas, apuntes, etc.); qué datos cambian cada vez "
+            "(materia, comisión, tarea, un texto, un archivo, una opción de una lista); qué tiene que entregar (una lista, un "
+            "informe, un archivo, un mensaje) y si escribe algo en el campus (en ese caso siempre se confirma en pantalla).\n"
+            "2. Si se puede sin escribir en el campus, probá la tarea conmigo una vez para comprobar que la instrucción funciona "
+            "y ajustala con lo que aprendas.\n"
+            "3. Proponeme un nombre corto y una descripción de una frase.\n"
+            "4. Guardala con la herramienta guardar_accion. Reglas: `pedido` es la instrucción completa y autosuficiente, escrita "
+            "para vos en segunda persona («Decime…», «Armá…»), con la skill a usar si corresponde («Usá la skill …») y con "
+            "{id} en el lugar de cada dato que se pide; para un dato opcional usá un bloque [[ … {id} … ]], que se omite entero "
+            "si el dato queda vacío. Tipos de dato: curso, comision y tarea (estos dos van después de un curso), texto, parrafo, "
+            "archivo, archivos y opcion (con `opciones`). Cada dato lleva id (minúsculas, sin espacios), tipo, etiqueta y, si "
+            "hace falta, opcional y ayuda. Lo que llega de curso, comision y tarea tiene la forma «Nombre (course_id 81)», "
+            "«Nombre (group_id 12)» o «Nombre (assign_id 5)»: la instrucción puede pedirte usar esos números.\n"
+            "5. La persona ve lo que proponés y lo confirma antes de que se guarde. Si pide cambios, ajustá y volvé a llamar."
+        ),
+    },
     # ------------------------------------------------------------------ campus
     {
         "id": "pendientes",

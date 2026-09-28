@@ -54,7 +54,7 @@ TOOLS_QUE_ESCRIBEN = {
     "corregir_con_active_ia",
 }
 # Tocan la configuración local de la skill: no dañan el campus pero no deberían pasar calladas.
-TOOLS_SENSIBLES = {"configurar", "actualizar_skill", "guardar_mis_datos", "guardar_clickup_id"}
+TOOLS_SENSIBLES = {"configurar", "actualizar_skill", "guardar_mis_datos", "guardar_clickup_id", "guardar_accion"}
 TOOLS_DE_ARCHIVO = {"Write", "Edit", "NotebookEdit", "MultiEdit"}
 
 
@@ -68,6 +68,54 @@ def _es_escritura(tool: str, entrada: dict[str, Any]) -> bool:
         return True
     # La skill marca sus escrituras con `confirmado`: una tool nueva queda frenada sola.
     return tool.startswith("mcp__") and "confirmado" in entrada
+
+
+def _servidor_acciones():
+    """
+    Herramienta propia del asistente (corre en este mismo proceso): deja que Claude guarde una
+    acción propia. La persona ve y confirma lo que se va a guardar antes de que se ejecute
+    (está en TOOLS_SENSIBLES) y `acciones.guardar` valida todo de nuevo.
+    """
+    from claude_agent_sdk import create_sdk_mcp_server, tool
+
+    from . import acciones
+
+    esquema = {
+        "type": "object",
+        "properties": {
+            "titulo": {"type": "string", "description": "Nombre corto de la acción (hasta 70 caracteres)."},
+            "bajada": {"type": "string", "description": "Descripción de una frase."},
+            "resultado": {"type": "string", "description": "Qué va a obtener la persona al usarla."},
+            "campos": {
+                "type": "array",
+                "description": "Los datos que se piden cada vez que se usa la acción.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "string", "description": "Identificador en minúsculas, sin espacios (ej. materia)."},
+                        "tipo": {"type": "string", "enum": list(acciones.TIPOS)},
+                        "etiqueta": {"type": "string"},
+                        "opcional": {"type": "boolean"},
+                        "ayuda": {"type": "string"},
+                        "opciones": {"type": "array", "items": {"type": "string"}, "description": "Sólo para tipo opcion."},
+                    },
+                    "required": ["id", "tipo", "etiqueta"],
+                },
+            },
+            "pedido": {"type": "string", "description": "La instrucción completa, con {id} donde va cada dato."},
+        },
+        "required": ["titulo", "bajada", "pedido"],
+    }
+
+    @tool("guardar_accion", "Guarda una acción propia de la persona (un botón nuevo en «Mis acciones»).", esquema)
+    async def guardar_accion(args: dict[str, Any]) -> dict[str, Any]:
+        try:
+            g = acciones.guardar(args)
+        except ValueError as e:
+            return {"content": [{"type": "text", "text": f"No se guardó: {e} Corregilo y volvé a llamar."}], "is_error": True}
+        return {"content": [{"type": "text", "text": f"Listo: la acción «{g['titulo']}» quedó guardada en «Mis acciones»."}]}
+
+    return create_sdk_mcp_server("asistente", tools=[guardar_accion])
 
 
 def _carpetas_escribibles(trabajo: Path) -> list[Path]:
@@ -92,6 +140,7 @@ def _dentro(ruta: str, bases: list[Path]) -> bool:
 
 PASOS = {
     "mis_datos": "Leyendo tus materias y comisiones",
+    "guardar_accion": "Guardar esta acción en «Mis acciones»",
     "mapear_mis_datos": "Buscando tus materias y comisiones asignadas",
     "aulas": "Leyendo tus materias y comisiones",
     "mi_comision": "Mirando tu comisión",
@@ -244,7 +293,7 @@ def _opciones(holder: dict[str, Sesion | None], trabajo: Path) -> ClaudeAgentOpt
             message=decision.get("motivo") or "La persona no confirmó la operación.", interrupt=False
         )
 
-    mcp = {}
+    mcp = {"asistente": _servidor_acciones()}
     campus = config.mcp_campus_activo()
     if campus:
         mcp["moodle-tutor"] = campus

@@ -3,9 +3,9 @@ Prueba de login y descubrimiento de un campus nuevo, con el Python de la skill d
 
 El asistente no lleva el cliente de Moodle: usa el de la skill instalada (sin modificarla),
 importando sus módulos (`moodle.cliente`, `moodle.ws_api`) desde una carpeta aparte. Este
-script NO guarda nada: prueba el login y arma el «Mis datos» del tutor en ese campus
-(materias, comisiones que tiene asignadas y tareas); guardar lo hace el asistente cuando
-todo salió bien.
+script NO guarda nada: prueba el login y devuelve, por materia, todas las comisiones
+candidatas (marcando cuáles son del tutor) y las tareas; elegir y guardar lo hace el
+asistente.
 
 Las credenciales viajan por stdin (JSON), nunca por argumentos ni por variables de
 entorno. Salida: una línea JSON.
@@ -50,41 +50,35 @@ async def _descubrir(d: dict) -> dict:
         nombre = ""
 
     armados: list[dict] = []
+    detectadas = False
     for c in cursos:
         cid = c.get("course_id")
         try:
             r = await cli.ws("core_group_get_course_user_groups", {"courseid": cid, "userid": uid})
-            grupos = (r or {}).get("groups", []) if isinstance(r, dict) else []
+            mios = {g.get("id") for g in ((r or {}).get("groups", []) if isinstance(r, dict) else [])}
         except Exception:  # noqa: BLE001
-            grupos = []
-        mias = [{"comision": g.get("name"), "group_id": g.get("id")}
-                for g in grupos if _es_comision(ws_api, g.get("name") or "")]
-        acceso_total = False
-        if not grupos:
-            # Sin membresía en ningún grupo (docente o manager con acceso a todo el curso):
-            # las comisiones a su cargo son todas las del curso.
-            try:
-                todos = await cli.ws("core_group_get_course_groups", {"courseid": cid})
-            except Exception:  # noqa: BLE001
-                todos = []
-            mias = [{"comision": g.get("name"), "group_id": g.get("id")}
-                    for g in (todos or []) if _es_comision(ws_api, g.get("name") or "")]
-            acceso_total = bool(mias)
+            mios = set()
+        try:
+            todos = await cli.ws("core_group_get_course_groups", {"courseid": cid}) or []
+        except Exception:  # noqa: BLE001
+            todos = []
+        # Todas las comisiones candidatas del curso; `mia` = el tutor es miembro del grupo.
+        # Sin membresía en ninguno (docente o manager con acceso a todo el curso) no se puede
+        # saber cuáles son las suyas: nada queda marcado y lo elige la persona.
+        comisiones = [{"group_id": g.get("id"), "comision": g.get("name"), "mia": g.get("id") in mios}
+                      for g in todos if _es_comision(ws_api, g.get("name") or "")]
+        detectadas = detectadas or any(x["mia"] for x in comisiones)
         try:
             tareas = [{"assign_id": str(t["id"]), "titulo": t.get("titulo", "")}
                       for t in await ws_api.listar_tareas(cli, cid)]
         except Exception:  # noqa: BLE001
             tareas = []
-        armados.append({"course_id": cid, "nombre": c.get("nombre"),
-                        "comisiones_del_tutor": mias, "tareas": tareas,
-                        **({"acceso_total": True} if acceso_total else {})})
+        armados.append({"course_id": cid, "nombre": c.get("nombre"), "tareas": tareas, "comisiones": comisiones})
 
-    # Sólo las materias donde el tutor tiene comisión; si en ninguna, todas (vacías).
-    con_comision = [a for a in armados if a["comisiones_del_tutor"]]
-    salida = {"ok": True, "mis_datos": {"tutor": {"nombre": nombre}, "cursos": con_comision or armados}}
-    if any(a.get("acceso_total") for a in salida["mis_datos"]["cursos"]):
-        salida["nota"] = ("No figurás como miembro de ningún grupo en algunos cursos (tenés acceso docente "
-                          "a todo el curso): se listaron todas sus comisiones.")
+    salida = {"ok": True, "tutor": nombre, "cursos": armados, "detectadas": detectadas}
+    if not detectadas:
+        salida["nota"] = ("No figurás como miembro de ninguna comisión (por ejemplo, tenés acceso docente a todo "
+                          "el curso): elegí cuáles son las tuyas.")
     return salida
 
 

@@ -149,6 +149,99 @@ def escribir_env(tenant_id: str, valores: dict[str, str]) -> Path:
     return ruta
 
 
+def _leer_json(ruta: Path) -> dict:
+    try:
+        d = json.loads(ruta.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def leer_credenciales(tenant_id: str) -> dict[str, str]:
+    """El `.env` del campus (lo escribió el asistente o la skill): `{MOODLE_USER, MOODLE_PASS, ...}`."""
+    vals: dict[str, str] = {}
+    try:
+        lineas = (datos_dir(tenant_id) / ".env").read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return vals
+    for ln in lineas:
+        ln = ln.strip()
+        if ln and not ln.startswith("#") and "=" in ln:
+            k, _, v = ln.partition("=")
+            vals[k.strip()] = v.strip()
+    return vals
+
+
+def guardar_catalogo(tenant_id: str, catalogo: dict) -> None:
+    """Todo lo elegible del campus (materias, comisiones candidatas y tareas), para poder
+    volver a elegir cuáles son las del tutor sin volver a conectarse."""
+    carpeta = datos_dir(tenant_id)
+    carpeta.mkdir(parents=True, exist_ok=True)
+    (carpeta / "catalogo.json").write_text(json.dumps(catalogo, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def leer_catalogo(tenant_id: str) -> dict | None:
+    d = _leer_json(datos_dir(tenant_id) / "catalogo.json")
+    return d if isinstance(d.get("cursos"), list) else None
+
+
+def seleccion_actual(tenant_id: str) -> dict[int, list[int]] | None:
+    """Las comisiones que hoy figuran como del tutor en su «Mis datos»: `{course_id: [group_id]}`."""
+    datos = _leer_json(datos_dir(tenant_id) / "mis_datos.json")
+    if not isinstance(datos.get("cursos"), list):
+        return None
+    return {
+        c["course_id"]: [g["group_id"] for g in c.get("comisiones_del_tutor", []) if isinstance(g, dict) and "group_id" in g]
+        for c in datos["cursos"] if isinstance(c, dict) and "course_id" in c
+    }
+
+
+def construir_mis_datos(catalogo: dict, seleccion: dict[int, list[int]], base: dict | None = None) -> dict:
+    """
+    El «Mis datos» que leen las skills, con sólo las comisiones elegidas. Una materia sin
+    ninguna comisión elegida queda afuera. `base` es el «Mis datos» anterior: se conservan
+    sus otras claves (ClickUp, etc.) y las tareas ya cargadas de cada materia.
+    Levanta ValueError si se elige algo que el campus no tiene o si no se eligió ninguna comisión.
+    """
+    base = base if isinstance(base, dict) else {}
+    previas = {c.get("course_id"): c for c in base.get("cursos", []) if isinstance(c, dict)}
+    por_curso = {c["course_id"]: c for c in catalogo["cursos"]}
+    cursos = []
+    for cid, elegidas in seleccion.items():
+        if cid not in por_curso:
+            raise ValueError(f"La materia {cid} no existe en este campus.")
+        curso = por_curso[cid]
+        candidatas = {g["group_id"]: g for g in curso["comisiones"]}
+        faltan = [g for g in elegidas if g not in candidatas]
+        if faltan:
+            raise ValueError(f"Hay comisiones que no existen en «{curso['nombre']}».")
+        if not elegidas:
+            continue
+        previa = previas.get(cid, {})
+        cursos.append({
+            **{k: v for k, v in previa.items() if k not in ("course_id", "nombre", "comisiones_del_tutor", "tareas", "acceso_total")},
+            "course_id": cid,
+            "nombre": curso["nombre"],
+            "comisiones_del_tutor": [{"comision": g["comision"], "group_id": g["group_id"]}
+                                     for g in curso["comisiones"] if g["group_id"] in set(elegidas)],
+            "tareas": previa.get("tareas") or curso.get("tareas", []),
+        })
+    if not cursos:
+        raise ValueError("Elegí al menos una comisión.")
+    return {**{k: v for k, v in base.items() if k != "cursos"},
+            "tutor": base.get("tutor") or {"nombre": catalogo.get("tutor", "")}, "cursos": cursos}
+
+
+def guardar_mis_datos(tenant_id: str, datos: dict) -> None:
+    """Escribe el «Mis datos» del campus; si ya había uno, deja copia en `mis_datos.json.bak`."""
+    carpeta = datos_dir(tenant_id)
+    carpeta.mkdir(parents=True, exist_ok=True)
+    destino = carpeta / "mis_datos.json"
+    if destino.is_file():
+        shutil.copyfile(destino, carpeta / "mis_datos.json.bak")
+    destino.write_text(json.dumps(datos, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def mcp_campus_activo() -> dict | None:
     """
     La definición del MCP `moodle-tutor` para el campus activo. TUP: la de siempre. Otro

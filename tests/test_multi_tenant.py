@@ -190,67 +190,197 @@ def _alta_payload(**kw):
     return {"nombre": "UTN Mendoza", "url": "https://campus.frm.edu", "moodle_user": "u", "moodle_pass": "p", **kw}
 
 
-def test_api_alta_valida_datos_antes_de_probar_nada(home):
-    client = _cliente()
-    assert client.post("/api/campus", json=_alta_payload(url="campus.sin.esquema")).status_code == 400
-    assert client.post("/api/campus", json=_alta_payload(moodle_pass="")).status_code == 400
-    assert client.post("/api/campus", json=_alta_payload(activeia_user="x")).status_code == 400  # Active-IA a medias
-
-
 def _resultado(ok=True, **extra):
     salida = {"ok": ok, **extra}
     return subprocess.CompletedProcess([], 0, stdout=json.dumps(salida, ensure_ascii=True) + "\n", stderr="")
 
 
-MIS_DATOS = {"tutor": {"nombre": "Tutor"}, "cursos": [
-    {"course_id": 3, "nombre": "Prog 1", "comisiones_del_tutor": [{"comision": "1pro1", "group_id": 5}],
-     "tareas": [{"assign_id": "9", "titulo": "TP1"}], "acceso_total": True}]}
+# Lo que devuelve el subproceso: todas las comisiones candidatas; `mia` = es del tutor.
+DESCUBIERTO = {"tutor": "Tutor", "detectadas": False, "nota": "elegí cuáles son las tuyas", "cursos": [
+    {"course_id": 3, "nombre": "Prog 1", "tareas": [{"assign_id": "9", "titulo": "TP1"}],
+     "comisiones": [{"group_id": 5, "comision": "1pro3", "mia": False}, {"group_id": 6, "comision": "1pro4", "mia": False},
+                    {"group_id": 7, "comision": "1pro5", "mia": False}]},
+    {"course_id": 6, "nombre": "Prog II", "tareas": [], "comisiones": [{"group_id": 8, "comision": "2pro5", "mia": False}]},
+]}
 
 
-def test_api_alta_ok_guarda_todo_y_activa_el_campus(home, monkeypatch):
+def _con_membresia():
+    d = json.loads(json.dumps(DESCUBIERTO))
+    d["detectadas"], d["nota"] = True, None
+    d["cursos"][0]["comisiones"][0]["mia"] = True
+    return d
+
+
+def _probar(client, monkeypatch, descubierto=DESCUBIERTO, **kw):
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **k: _resultado(**descubierto))
+    return client.post("/api/campus/probar", json=_alta_payload(**kw))
+
+
+def test_api_probar_valida_datos_antes_de_probar_nada(home):
+    client = _cliente()
+    assert client.post("/api/campus/probar", json=_alta_payload(url="campus.sin.esquema")).status_code == 400
+    assert client.post("/api/campus/probar", json=_alta_payload(moodle_pass="")).status_code == 400
+    assert client.post("/api/campus/probar", json=_alta_payload(activeia_user="x")).status_code == 400  # Active-IA a medias
+
+
+def test_api_probar_no_guarda_nada_y_deja_todo_desmarcado_si_no_hay_membresia(home, monkeypatch):
     visto = {}
 
     def fake_run(cmd, **kw):
         visto.update(cmd=cmd, entrada=json.loads(kw["input"]), env=kw["env"])
-        return _resultado(mis_datos=MIS_DATOS, nota="acceso docente")
+        return _resultado(**DESCUBIERTO)
 
     monkeypatch.setattr(subprocess, "run", fake_run)
-    r = _cliente().post("/api/campus", json=_alta_payload(activeia_user="ia", activeia_pass="pw"))
+    r = _cliente().post("/api/campus/probar", json=_alta_payload(activeia_user="ia", activeia_pass="pw"))
     assert r.status_code == 200, r.text
-    assert r.json()["activo"] == "utn-mendoza" and r.json()["detalle"]["cursos"] == 1
-    carpeta = home / ".asistente-tup" / "campus" / "utn-mendoza"
-    assert json.loads((carpeta / "mis_datos.json").read_text(encoding="utf-8")) == MIS_DATOS
-    env = (carpeta / ".env").read_text(encoding="utf-8")
-    assert "MOODLE_USER=u" in env and "MOODLE_URL=https://campus.frm.edu" in env and "ACTIVEIA_USER=ia" in env
+    cuerpo = r.json()
+    assert cuerpo["detectadas"] is False and cuerpo["nota"] and cuerpo["token"]
+    assert not any(g["elegida"] for c in cuerpo["cursos"] for g in c["comisiones"])
+    assert not config.CAMPUS_DIR.exists() and [c["id"] for c in config.listar_campus()] == ["tup"]
     # Credenciales sólo por stdin: ni en argumentos ni en el entorno del subproceso.
     assert visto["entrada"]["moodle_pass"] == "p" and "p" not in visto["cmd"][1:]
     assert not any(k.startswith(("MOODLE_", "ACTIVEIA_")) for k in visto["env"])
     assert visto["env"]["PYTHONIOENCODING"] == "utf-8"
 
 
-def test_api_alta_con_login_invalido_no_guarda_nada_ni_cambia_de_campus(home, monkeypatch):
+def test_api_probar_marca_las_del_tutor_si_hay_membresia(home, monkeypatch):
+    cuerpo = _probar(_cliente(), monkeypatch, _con_membresia()).json()
+    marcadas = [g["comision"] for c in cuerpo["cursos"] for g in c["comisiones"] if g["elegida"]]
+    assert marcadas == ["1pro3"] and cuerpo["detectadas"] is True
+
+
+def test_api_probar_con_login_invalido(home, monkeypatch):
     monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: _resultado(False, error="Acceso inválido"))
-    r = _cliente().post("/api/campus", json=_alta_payload())
+    r = _cliente().post("/api/campus/probar", json=_alta_payload())
     assert r.status_code == 400 and "Acceso inválido" in r.json()["detail"]
-    assert config.tenant_activo() == "tup" and [c["id"] for c in config.listar_campus()] == ["tup"]
     assert not config.CAMPUS_DIR.exists()
 
 
-def test_api_alta_no_repite_un_id_existente(home, monkeypatch):
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: _resultado(mis_datos=MIS_DATOS))
-    client = _cliente()
-    assert client.post("/api/campus", json=_alta_payload()).json()["activo"] == "utn-mendoza"
-    assert client.post("/api/campus", json=_alta_payload()).json()["activo"] == "utn-mendoza-2"
-
-
-def test_api_alta_no_permite_pisar_tup(home, monkeypatch):
-    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: _resultado(mis_datos=MIS_DATOS))
-    assert _cliente().post("/api/campus", json=_alta_payload(nombre="TUP")).json()["activo"] == "tup-2"
-
-
-def test_api_alta_sin_skill_instalada(home, monkeypatch):
+def test_api_probar_sin_skill_instalada(home, monkeypatch):
     monkeypatch.setattr(config, "mcp_campus", lambda: None)
-    assert _cliente().post("/api/campus", json=_alta_payload()).status_code == 400
+    assert _cliente().post("/api/campus/probar", json=_alta_payload()).status_code == 400
+
+
+def _seleccion(*pares):
+    return [{"course_id": c, "group_ids": g} for c, g in pares]
+
+
+def test_api_confirmar_guarda_solo_lo_elegido_y_activa_el_campus(home, monkeypatch):
+    client = _cliente()
+    token = _probar(client, monkeypatch, activeia_user="ia", activeia_pass="pw").json()["token"]
+    r = client.post("/api/campus", json={"token": token, "seleccion": _seleccion((3, [5, 6]), (6, []))})
+    assert r.status_code == 200, r.text
+    assert r.json()["activo"] == "utn-mendoza" and r.json()["detalle"]["cursos"] == 1
+    carpeta = home / ".asistente-tup" / "campus" / "utn-mendoza"
+    datos = json.loads((carpeta / "mis_datos.json").read_text(encoding="utf-8"))
+    assert [c["nombre"] for c in datos["cursos"]] == ["Prog 1"]          # Prog II sin comisiones queda afuera
+    assert [g["comision"] for g in datos["cursos"][0]["comisiones_del_tutor"]] == ["1pro3", "1pro4"]
+    assert datos["cursos"][0]["tareas"] == [{"assign_id": "9", "titulo": "TP1"}]
+    env = (carpeta / ".env").read_text(encoding="utf-8")
+    assert "MOODLE_USER=u" in env and "MOODLE_URL=https://campus.frm.edu" in env and "ACTIVEIA_USER=ia" in env
+    assert (carpeta / "catalogo.json").is_file()
+
+
+def test_api_confirmar_exige_al_menos_una_comision_y_ids_reales(home, monkeypatch):
+    client = _cliente()
+    token = _probar(client, monkeypatch).json()["token"]
+    assert client.post("/api/campus", json={"token": token, "seleccion": _seleccion((3, []))}).status_code == 400
+    assert client.post("/api/campus", json={"token": token, "seleccion": _seleccion((3, [999]))}).status_code == 400
+    assert client.post("/api/campus", json={"token": token, "seleccion": _seleccion((77, [1]))}).status_code == 400
+    assert [c["id"] for c in config.listar_campus()] == ["tup"]           # nada se guardó
+
+
+def test_api_confirmar_con_token_desconocido_o_vencido(home, monkeypatch):
+    from backend import app as backend_app
+
+    client = _cliente()
+    assert client.post("/api/campus", json={"token": "nope", "seleccion": _seleccion((3, [5]))}).status_code == 410
+    token = _probar(client, monkeypatch).json()["token"]
+    backend_app._PENDIENTES[token]["hora"] -= backend_app._VIDA_PENDIENTE_S + 1
+    assert client.post("/api/campus", json={"token": token, "seleccion": _seleccion((3, [5]))}).status_code == 410
+
+
+def test_api_no_repite_un_id_existente_ni_pisa_tup(home, monkeypatch):
+    client = _cliente()
+    ids = []
+    for nombre in ("UTN Mendoza", "UTN Mendoza", "TUP"):
+        t = _probar(client, monkeypatch, nombre=nombre).json()["token"]
+        ids.append(client.post("/api/campus", json={"token": t, "seleccion": _seleccion((3, [5]))}).json()["activo"])
+    assert ids == ["utn-mendoza", "utn-mendoza-2", "tup-2"]
+
+
+def _campus_con_catalogo(home, monkeypatch):
+    client = _cliente()
+    t = _probar(client, monkeypatch).json()["token"]
+    client.post("/api/campus", json={"token": t, "seleccion": _seleccion((3, [5]))})
+    return client
+
+
+def test_editar_asignacion_lee_del_campus_y_marca_lo_elegido(home, monkeypatch):
+    client = _campus_con_catalogo(home, monkeypatch)
+    monkeypatch.setattr(subprocess, "run", lambda cmd, **kw: _resultado(**DESCUBIERTO))
+    r = client.post("/api/campus/utn-mendoza/asignacion/leer")
+    assert r.status_code == 200, r.text
+    elegidas = [g["comision"] for c in r.json()["cursos"] for g in c["comisiones"] if g["elegida"]]
+    assert elegidas == ["1pro3"] and r.json()["tiene_seleccion"] is True
+
+
+def test_editar_asignacion_guarda_conserva_otras_claves_y_deja_copia(home, monkeypatch):
+    client = _campus_con_catalogo(home, monkeypatch)
+    ruta = home / ".asistente-tup" / "campus" / "utn-mendoza" / "mis_datos.json"
+    datos = json.loads(ruta.read_text(encoding="utf-8"))
+    datos["clickup"] = {"id": "77"}
+    ruta.write_text(json.dumps(datos), encoding="utf-8")
+    r = client.put("/api/campus/utn-mendoza/asignacion", json={"seleccion": _seleccion((3, [6, 7]), (6, [8]))})
+    assert r.status_code == 200, r.text
+    nuevo = json.loads(ruta.read_text(encoding="utf-8"))
+    assert nuevo["clickup"] == {"id": "77"}
+    assert [(c["nombre"], [g["comision"] for g in c["comisiones_del_tutor"]]) for c in nuevo["cursos"]] == [
+        ("Prog 1", ["1pro4", "1pro5"]), ("Prog II", ["2pro5"])]
+    assert json.loads(ruta.with_name("mis_datos.json.bak").read_text(encoding="utf-8"))["clickup"] == {"id": "77"}
+    # y lo que ve el resto de la app sigue al «Mis datos»
+    config.set_tenant_activo("utn-mendoza")
+    assert [c["nombre"] for c in client.get("/api/catalogo").json()["cursos"]] == ["Prog 1", "Prog II"]
+
+
+def test_editar_asignacion_rechaza_vacio_y_campus_desconocido(home, monkeypatch):
+    client = _campus_con_catalogo(home, monkeypatch)
+    assert client.put("/api/campus/utn-mendoza/asignacion", json={"seleccion": _seleccion((3, []))}).status_code == 400
+    assert client.put("/api/campus/no-existe/asignacion", json={"seleccion": _seleccion((3, [5]))}).status_code == 404
+    assert client.post("/api/campus/no-existe/asignacion/leer").status_code == 404
+
+
+def test_editar_asignacion_sin_catalogo_pide_leer_primero(home):
+    config.registrar_campus("otro", "Otro", "https://o")
+    r = _cliente().put("/api/campus/otro/asignacion", json={"seleccion": _seleccion((3, [5]))})
+    assert r.status_code == 409
+
+
+def test_leer_asignacion_sin_credenciales_guardadas(home):
+    config.registrar_campus("otro", "Otro", "https://o")
+    assert _cliente().post("/api/campus/otro/asignacion/leer").status_code == 400
+
+
+def test_editar_tup_usa_su_env_y_conserva_sus_tareas_curadas(home, monkeypatch):
+    (home / ".moodle-skill").mkdir()
+    (home / ".moodle-skill" / ".env").write_text("MOODLE_USER=tutor\nMOODLE_PASS=clave\n", encoding="utf-8")
+    (home / ".moodle-skill" / "mis_datos.json").write_text(json.dumps({"tutor": {"nombre": "Yo"}, "cursos": [
+        {"course_id": 3, "nombre": "Prog 1", "comisiones_del_tutor": [{"comision": "1pro3", "group_id": 5}],
+         "tareas": [{"assign_id": "9", "titulo": "TP curado"}]}]}), encoding="utf-8")
+    visto = {}
+
+    def fake_run(cmd, **kw):
+        visto["e"] = json.loads(kw["input"])
+        return _resultado(**DESCUBIERTO)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    client = _cliente()
+    r = client.post("/api/campus/tup/asignacion/leer")
+    assert r.status_code == 200 and visto["e"]["moodle_user"] == "tutor" and visto["e"]["url"] == "https://tup.test"
+    assert client.put("/api/campus/tup/asignacion", json={"seleccion": _seleccion((3, [5, 6]))}).status_code == 200
+    datos = json.loads((home / ".moodle-skill" / "mis_datos.json").read_text(encoding="utf-8"))
+    assert datos["tutor"] == {"nombre": "Yo"} and datos["cursos"][0]["tareas"] == [{"assign_id": "9", "titulo": "TP curado"}]
+    assert len(datos["cursos"][0]["comisiones_del_tutor"]) == 2 and (home / ".moodle-skill" / "mis_datos.json.bak").is_file()
 
 
 # --------------------------------------------------------------------------- #
