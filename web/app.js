@@ -51,9 +51,23 @@ async function cargar() {
   E.estado = estadoR.value;
   E.catalogo = catalogoR.value;
   E.campus = campusR.status === 'fulfilled' ? campusR.value : { campus: [], activo: null };
+  pintarCampus();
   const mal = E.estado.chequeos.filter((c) => !c.ok);
   document.getElementById('estado-punto').className = 'punto ' + (mal.length ? 'mal' : 'ok');
   document.getElementById('estado-texto').textContent = mal.length ? `Falta configurar ${mal.length === 1 ? 'algo' : mal.length + ' cosas'}` : 'Todo listo';
+}
+
+function pintarCampus() {
+  const chip = document.getElementById('campus-chip');
+  const lista = E.campus?.campus || [];
+  const activo = lista.find((k) => String(k.id) === String(E.campus?.activo));
+  chip.hidden = false;
+  document.getElementById('campus-nombre').textContent = activo ? activo.nombre : (lista.length ? 'Elegir…' : 'Agregar');
+}
+
+async function recargar() {
+  E.estado = null;
+  await cargar();
 }
 
 async function ruta() {
@@ -69,6 +83,7 @@ async function ruta() {
   if (vista === 'receta' && id) return verReceta(id);
   if (vista === 'estado') return verEstado();
   if (vista === 'ayuda') return verAyuda();
+  if (vista === 'campus') return verCampus();
   verInicio();
 }
 function confirmarSalida() {
@@ -101,7 +116,11 @@ function verInicio() {
   montar(
     h('div', { class: 'saludo' },
       h('h1', {}, nombre ? `Hola, ${nombre}.` : 'Hola.'),
-      h('p', {}, 'Elegí qué querés hacer. Te voy a pedir sólo lo necesario y te muestro cada paso.')),
+      h('p', {}, 'Elegí qué querés hacer. Te voy a pedir sólo lo necesario y te muestro cada paso.'),
+      (() => {
+        const activo = (E.campus?.campus || []).find((k) => String(k.id) === String(E.campus.activo));
+        return h('p', { class: 'meta', style: 'margin-top:10px' }, 'Trabajando en el campus: ', h('strong', {}, activo ? activo.nombre : 'sin elegir'), ' · ', h('a', { href: '#/campus' }, 'Cambiar o agregar otro'));
+      })()),
     mal.length ? h('p', { class: 'aviso' }, 'Hay cosas por configurar antes de usar todo. ', h('a', { href: '#/estado' }, 'Ver qué falta')) : null,
     ...secciones,
   );
@@ -138,9 +157,6 @@ function verReceta(id) {
 }
 
 function campo(c, valores, bus) {
-  // Sin tenants dados de alta (todavía la realidad de cualquier instalación existente)
-  // no hay nada entre qué elegir: no se renderiza nada, nunca un input de texto libre.
-  if (c.tipo === 'campus' && !(E.campus?.campus || []).length) return null;
   const id = 'c-' + c.id;
   const etiqueta = h('label', { for: id }, c.etiqueta, c.opcional && !/opcional/i.test(c.etiqueta) ? h('span', { class: 'opcional' }, ' (opcional)') : null);
   const ayuda = c.ayuda ? h('span', { class: 'ayuda' }, c.ayuda) : null;
@@ -149,20 +165,7 @@ function campo(c, valores, bus) {
 
   const set = (v) => { valores[c.id] = v; };
 
-  if (c.tipo === 'campus' && (E.campus?.campus || []).length) {
-    control = h('select', { id });
-    const opciones = [h('option', { value: '' }, c.opcional ? 'El activo' : 'Elegí…')];
-    E.campus.campus.forEach((k) => {
-      const activo = String(k.id) === String(E.campus.activo);
-      opciones.push(h('option', { value: `${k.nombre} (campus ${k.id})`, selected: activo }, k.nombre + (activo ? ' (activo)' : '')));
-    });
-    control.replaceChildren(...opciones);
-    control.addEventListener('change', () => set(control.value));
-    // A propósito NO se llama a set() acá: dejar el campo en su valor pre-seleccionado
-    // (el campus activo, mostrado como tal) no cuenta como una elección explícita, así
-    // que valores.campus queda vacío y el bloque [[...]] del pedido no se agrega —
-    // recién se completa si la persona lo toca (evento 'change' de arriba).
-  } else if ((c.tipo === 'curso' || c.tipo === 'comision' || c.tipo === 'tarea') && cursos.length) {
+  if ((c.tipo === 'curso' || c.tipo === 'comision' || c.tipo === 'tarea') && cursos.length) {
     control = h('select', { id });
     const llenar = () => {
       const opciones = [h('option', { value: '' }, c.opcional ? 'Todas' : 'Elegí…')];
@@ -497,6 +500,83 @@ function verEstado() {
     h('div', { class: 'campo' }, h('label', { for: 'cfg-trabajo' }, 'Carpeta de trabajo'), h('span', { class: 'ayuda' }, 'Acá quedan los archivos que subís y lo que Claude produce (rúbricas, apuntes…).'), trabajo),
     h('div', { class: 'campo' }, h('label', { for: 'cfg-informes' }, 'Carpeta de informes'), h('span', { class: 'ayuda' }, 'Los PDF del campus se copian acá al terminar cada tarea.'), informes),
     h('div', {}, h('button', { class: 'boton', type: 'submit' }, 'Guardar')), msg),
+  );
+}
+
+// ------------------------------------------------------------------ campus
+function verCampus() {
+  const lista = E.campus?.campus || [];
+  const msg = h('p', { class: 'error-form', role: 'alert', 'aria-live': 'polite' });
+  const ok = h('p', { class: 'meta', role: 'status', 'aria-live': 'polite' });
+
+  const cambiar = async (k, boton) => {
+    msg.textContent = ''; ok.textContent = '';
+    boton.disabled = true;
+    try {
+      E.campus = await api('/api/campus/activo', { method: 'POST', body: { id: k.id } });
+      await recargar();
+      verCampus();
+    } catch (e) { msg.textContent = e.message; boton.disabled = false; }
+  };
+
+  const items = lista.map((k) => {
+    const activo = String(k.id) === String(E.campus.activo);
+    const boton = h('button', { type: 'button', class: 'boton secundario chico' }, 'Usar este');
+    boton.addEventListener('click', () => cambiar(k, boton));
+    return h('li', { class: 'campus-item' + (activo ? ' activo' : '') },
+      h('div', { class: 'campus-datos' }, h('strong', {}, k.nombre), h('span', {}, k.url || '')),
+      activo ? h('span', { class: 'campus-insignia' }, '● Activo') : boton);
+  });
+
+  const v = {};
+  const campoForm = (id, etiqueta, tipo, ayuda, extra = {}) => {
+    const input = h('input', { type: tipo, id: 'f-' + id, autocomplete: 'off', ...extra });
+    input.addEventListener('input', () => { v[id] = input.value; });
+    return h('div', { class: 'campo' }, h('label', { for: 'f-' + id }, etiqueta), input, ayuda ? h('span', { class: 'ayuda' }, ayuda) : null);
+  };
+  const enviar = h('button', { class: 'boton', type: 'submit' }, 'Probar conexión y agregar');
+  const form = h('form', { class: 'formulario campus-form', novalidate: true, onsubmit: async (ev) => {
+    ev.preventDefault();
+    msg.textContent = ''; ok.textContent = '';
+    // Se lee del DOM y no de los eventos 'input': el autocompletado del navegador no siempre los dispara.
+    form.querySelectorAll('input').forEach((i) => { v[i.id.replace(/^f-/, '')] = i.value; });
+    const falta = [['nombre', 'el nombre'], ['url', 'la dirección'], ['moodle_user', 'el usuario'], ['moodle_pass', 'la contraseña']]
+      .filter(([k]) => !(v[k] || '').trim()).map(([, t]) => t);
+    if (falta.length) { msg.textContent = 'Falta completar ' + falta.join(', ') + '.'; return; }
+    if (!!(v.activeia_user || '').trim() !== !!v.activeia_pass) { msg.textContent = 'Para Active-IA cargá usuario y contraseña, o dejá los dos vacíos.'; return; }
+    enviar.disabled = true; enviar.textContent = 'Probando la conexión… (puede tardar un minuto)';
+    try {
+      E.campus = await api('/api/campus', { method: 'POST', body: {
+        nombre: v.nombre, url: v.url, moodle_user: v.moodle_user, moodle_pass: v.moodle_pass,
+        activeia_user: v.activeia_user || '', activeia_pass: v.activeia_pass || '',
+      } });
+      await recargar();
+      location.hash = '#/';
+    } catch (e) {
+      msg.textContent = e.message;
+      enviar.disabled = false; enviar.textContent = 'Probar conexión y agregar';
+    }
+  } },
+  h('fieldset', {}, h('legend', {}, 'Campus'),
+    campoForm('nombre', 'Nombre', 'text', 'Como querés verlo en la lista. Ej.: «UTN Mendoza».'),
+    campoForm('url', 'Dirección del campus', 'url', 'La URL de tu Moodle. Ej.: https://campus.miuniversidad.edu.ar', { placeholder: 'https://' }),
+    campoForm('moodle_user', 'Usuario del campus', 'text'),
+    campoForm('moodle_pass', 'Contraseña del campus', 'password')),
+  h('fieldset', {}, h('legend', {}, 'Active-IA (opcional)'),
+    h('p', { class: 'meta', style: 'margin:0' }, 'Si en Active-IA usás otro usuario para este campus, cargalo acá. Si no corregís con Active-IA, dejalo vacío.'),
+    campoForm('activeia_user', 'Usuario de Active-IA', 'text'),
+    campoForm('activeia_pass', 'Contraseña de Active-IA', 'password')),
+  h('p', { class: 'meta', style: 'margin:0' }, 'Antes de guardar se prueba el ingreso. Los datos quedan sólo en esta computadora. Después se buscan tus materias y comisiones y el campus pasa a ser el activo.'),
+  msg, h('div', {}, enviar));
+
+  montar(
+    h('button', { class: 'volver', type: 'button', onclick: () => { location.hash = '#/'; } }, '← Volver al inicio'),
+    h('h1', {}, 'Campus'),
+    h('p', { class: 'meta', style: 'font-size:15px' }, 'Las materias, comisiones y acciones dependen del campus activo. Elegí con cuál trabajar o sumá otro.'),
+    lista.length ? h('ul', { class: 'campus-lista' }, items) : h('p', { class: 'aviso' }, 'Todavía no hay ningún campus dado de alta.'),
+    ok,
+    h('h2', { style: 'margin-top:32px' }, 'Agregar un campus'),
+    form,
   );
 }
 
