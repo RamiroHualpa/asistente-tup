@@ -189,6 +189,9 @@ async def _descubrir(url: str, usuario: str, clave: str) -> dict:
         proc = await asyncio.to_thread(
             subprocess.run, [mcp["command"], str(runner), str(mcp["args"][0])],
             input=entrada, capture_output=True, text=True, timeout=240, env=entorno, encoding="utf-8", errors="replace",
+            # En Windows el servidor corre sin consola (pythonw): sin esto, el subproceso abre una
+            # ventana negra de consola cada vez que se prueba o se lee un campus.
+            **({"creationflags": subprocess.CREATE_NO_WINDOW} if config.es_windows() else {}),
         )
         res = json.loads(proc.stdout.strip().splitlines()[-1])
     except subprocess.TimeoutExpired:
@@ -652,8 +655,27 @@ def _ya_corre(url: str) -> bool:
         return False
 
 
+def _consola_oculta() -> None:
+    """
+    En Windows el asistente corre con pythonw (sin consola). Cada proceso de consola que lanza —el CLI de
+    Claude, la skill del campus— abriría entonces su propia ventana negra, que además roba el foco.
+    Con una consola oculta propia, todos los hijos la heredan y no aparece ninguna ventana.
+    """
+    if not config.es_windows():
+        return
+    import ctypes
+
+    k32, u32 = ctypes.windll.kernel32, ctypes.windll.user32
+    if not k32.GetConsoleWindow() and k32.AllocConsole():
+        hwnd = k32.GetConsoleWindow()
+        if hwnd:
+            u32.ShowWindow(hwnd, 0)  # SW_HIDE
+
+
 def main() -> None:
     import uvicorn
+
+    _consola_oculta()
 
     config.CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(

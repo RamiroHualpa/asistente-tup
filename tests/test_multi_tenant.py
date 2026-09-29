@@ -408,3 +408,29 @@ def test_es_comision_descarta_regionales_y_auxiliares(nombre):
     from backend import alta_campus
 
     assert not alta_campus._es_comision(_WsFalso, nombre)
+
+
+def test_el_subproceso_de_descubrimiento_no_abre_consola_en_windows(home, monkeypatch):
+    """Regresión: bajo pythonw cada prueba de un campus hacía aparecer una ventana negra."""
+    visto = {}
+
+    def fake_run(cmd, **kw):
+        visto.update(kw)
+        return _resultado(**DESCUBIERTO)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    monkeypatch.setattr(config, "es_windows", lambda: True)
+    monkeypatch.setattr(subprocess, "CREATE_NO_WINDOW", 0x08000000, raising=False)
+    assert _cliente().post("/api/campus/probar", json=_alta_payload()).status_code == 200
+    assert visto["creationflags"] == 0x08000000
+    visto.clear()
+    monkeypatch.setattr(config, "es_windows", lambda: False)
+    assert _cliente().post("/api/campus/probar", json=_alta_payload()).status_code == 200
+    assert "creationflags" not in visto
+
+
+def test_consola_oculta_no_hace_nada_fuera_de_windows(monkeypatch):
+    from backend import app as backend_app
+
+    monkeypatch.setattr(config, "es_windows", lambda: False)
+    assert backend_app._consola_oculta() is None  # no toca ctypes.windll (que ni existe en Linux/Mac)
